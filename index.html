@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Air Piano - Virtual Hand Tracking</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- MediaPipe Libraries -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <!-- Three.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #0f172a; font-family: 'Inter', sans-serif; }
+        canvas { display: block; }
+        .glass {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        #video-container {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            width: 240px;
+            height: 180px;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            transform: scaleX(-1); /* Mirror view */
+        }
+        video { width: 100%; height: 100%; object-fit: cover; }
+        .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+        .active-dot { background-color: #10b981; box-shadow: 0 0 10px #10b981; }
+        .waiting-dot { background-color: #f59e0b; }
+        .inactive-dot { background-color: #ef4444; }
+    </style>
+</head>
+<body>
+
+    <!-- Overlay UI -->
+    <div class="fixed top-6 left-6 z-10 space-y-4">
+        <div class="glass p-5 rounded-2xl text-white max-w-xs">
+            <h1 class="text-2xl font-bold bg-gradient-to-r from-cyan-400 to-blue-500 bg-clip-text text-transparent">Air Piano</h1>
+            <p class="text-xs text-slate-400 mt-1 uppercase tracking-widest">Hand Tracking v1.0</p>
+            
+            <div class="mt-4 space-y-2 text-sm">
+                <div class="flex items-center">
+                    <span id="cam-status" class="status-dot waiting-dot"></span>
+                    <span>Kamera: <span id="cam-text">Menunggu...</span></span>
+                </div>
+                <div class="flex items-center">
+                    <span id="hand-status" class="status-dot inactive-dot"></span>
+                    <span>Pelacakan: <span id="hand-text">Tidak Aktif</span></span>
+                </div>
+            </div>
+        </div>
+
+        <div class="glass p-4 rounded-xl text-white text-[10px] space-y-1 opacity-80">
+            <p class="font-bold border-b border-white/10 pb-1 mb-2">PEMETAAN JARI</p>
+            <div class="grid grid-cols-2 gap-2">
+                <div>
+                    <p class="text-cyan-400 font-semibold">Tangan Kanan</p>
+                    <p>Kelingking: C4</p>
+                    <p>Manis: D4</p>
+                    <p>Tengah: E4</p>
+                    <p>Telunjuk: F4</p>
+                    <p>Jempol: G4</p>
+                </div>
+                <div>
+                    <p class="text-blue-400 font-semibold">Tangan Kiri</p>
+                    <p>Jempol: A4</p>
+                    <p>Telunjuk: B4</p>
+                    <p>Tengah: C5</p>
+                    <p>Manis: D5</p>
+                    <p>Kelingking: E5</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- WebCam Preview -->
+    <div id="video-container" class="glass border-2 border-white/10">
+        <video id="input_video"></video>
+    </div>
+
+    <!-- Instructions -->
+    <div id="start-overlay" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/80 backdrop-blur-sm">
+        <div class="text-center p-8 glass rounded-3xl max-w-md border border-white/20">
+            <div class="text-5xl mb-4">🎹</div>
+            <h2 class="text-3xl font-bold text-white mb-4">Siap Bermain?</h2>
+            <p class="text-slate-300 mb-6 text-sm leading-relaxed">
+                Aplikasi ini memerlukan akses kamera untuk melacak gerakan jari Anda di udara. 
+                Gunakan jari Anda seperti menekan tuts piano di depan kamera.
+            </p>
+            <button id="start-btn" class="px-8 py-3 bg-cyan-500 hover:bg-cyan-400 text-white font-bold rounded-full transition-all shadow-lg shadow-cyan-500/30">
+                MULAI APLIKASI
+            </button>
+        </div>
+    </div>
+
+    <script>
+        // --- KONFIGURASI NADA ---
+        // Frekuensi Piano (Hz)
+        const notes = {
+            'C4': 261.63, 'D4': 293.66, 'E4': 329.63, 'F4': 349.23, 'G4': 392.00,
+            'A4': 440.00, 'B4': 493.88, 'C5': 523.25, 'D5': 587.33, 'E5': 659.25
+        };
+
+        const pianoKeys = [
+            { note: 'C4', color: 'white', x: -4.5 },
+            { note: 'D4', color: 'white', x: -3.5 },
+            { note: 'E4', color: 'white', x: -2.5 },
+            { note: 'F4', color: 'white', x: -1.5 },
+            { note: 'G4', color: 'white', x: -0.5 },
+            { note: 'A4', color: 'white', x: 0.5 },
+            { note: 'B4', color: 'white', x: 1.5 },
+            { note: 'C5', color: 'white', x: 2.5 },
+            { note: 'D5', color: 'white', x: 3.5 },
+            { note: 'E5', color: 'white', x: 4.5 }
+        ];
+
+        // Pemetaan Label MediaPipe Hands
+        // Kanan (Right Hand): Index 20(Pinky), 16(Ring), 12(Middle), 8(Index), 4(Thumb)
+        // Kiri (Left Hand): Index 4(Thumb), 8(Index), 12(Middle), 16(Ring), 20(Pinky)
+        // Catatan: Karena tampilan cermin, kita akan menyesuaikan logika berdasarkan "Left" vs "Right" yang diberikan MediaPipe
+        
+        const RIGHT_HAND_MAP = { 20: 'C4', 16: 'D4', 12: 'E4', 8: 'F4', 4: 'G4' };
+        const LEFT_HAND_MAP = { 4: 'A4', 8: 'B4', 12: 'C5', 16: 'D5', 20: 'E5' };
+
+        // --- AUDIO SYSTEM ---
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const activeOscillators = {};
+
+        function playNote(note) {
+            if (activeOscillators[note]) return;
+            
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            
+            osc.type = 'triangle'; // Suara lembut mirip piano
+            osc.frequency.setValueAtTime(notes[note], audioCtx.currentTime);
+            
+            gain.gain.setValueAtTime(0, audioCtx.currentTime);
+            gain.gain.linearRampToValueAtTime(0.5, audioCtx.currentTime + 0.05);
+            gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 1.5);
+
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            
+            osc.start();
+            osc.stop(audioCtx.currentTime + 1.5);
+            activeOscillators[note] = { osc, gain };
+            
+            setTimeout(() => { delete activeOscillators[note]; }, 300); // Cooldown
+        }
+
+        // --- THREE.JS SCENE SETUP ---
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x0f172a);
+        
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        document.body.appendChild(renderer.domElement);
+
+        // Lights
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+        scene.add(ambientLight);
+        
+        const pointLight = new THREE.PointLight(0x06b6d4, 1, 100);
+        pointLight.position.set(0, 5, 5);
+        pointLight.castShadow = true;
+        scene.add(pointLight);
+
+        // Floor/Table
+        const floorGeo = new THREE.PlaneGeometry(20, 10);
+        const floorMat = new THREE.MeshStandardMaterial({ color: 0x1e293b });
+        const floor = new THREE.Mesh(floorGeo, floorMat);
+        floor.rotation.x = -Math.PI / 2;
+        floor.position.y = -1.1;
+        floor.receiveShadow = true;
+        scene.add(floor);
+
+        // Keyboard Construction
+        const keyMeshes = {};
+        pianoKeys.forEach(k => {
+            const geo = new THREE.BoxGeometry(0.9, 0.5, 4);
+            const mat = new THREE.MeshStandardMaterial({ color: 0xffffff });
+            const mesh = new THREE.Mesh(geo, mat);
+            mesh.position.set(k.x, -0.5, 0);
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+            scene.add(mesh);
+            keyMeshes[k.note] = { mesh, originalY: -0.5, originalColor: 0xffffff };
+        });
+
+        camera.position.set(0, 6, 8);
+        camera.lookAt(0, -1, 0);
+
+        // --- MEDIAPIPE HANDS SETUP ---
+        const videoElement = document.getElementById('input_video');
+        const camStatus = document.getElementById('cam-status');
+        const camText = document.getElementById('cam-text');
+        const handStatus = document.getElementById('hand-status');
+        const handText = document.getElementById('hand-text');
+
+        const PRESS_THRESHOLD = 0.5; // Ketinggian Z relatif (MediaPipe normalized)
+        let lastStates = {}; // Untuk debouncing
+
+        function onResults(results) {
+            // Update UI
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                handStatus.className = "status-dot active-dot";
+                handText.innerText = "Terdeteksi";
+            } else {
+                handStatus.className = "status-dot inactive-dot";
+                handText.innerText = "Mencari...";
+            }
+
+            // Visual feedback reset semua tuts ke posisi awal secara perlahan
+            Object.values(keyMeshes).forEach(k => {
+                k.mesh.position.y += (k.originalY - k.mesh.position.y) * 0.2;
+                k.mesh.material.color.lerp(new THREE.Color(k.originalColor), 0.1);
+            });
+
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                for (let i = 0; i < results.multiHandLandmarks.length; i++) {
+                    const landmarks = results.multiHandLandmarks[i];
+                    const classification = results.multiHandedness[i].label; // "Left" or "Right"
+                    
+                    const fingerIndices = [4, 8, 12, 16, 20]; // Tip landmarks
+                    const map = (classification === "Right") ? RIGHT_HAND_MAP : LEFT_HAND_MAP;
+
+                    fingerIndices.forEach(idx => {
+                        const point = landmarks[idx];
+                        const note = map[idx];
+                        
+                        // Deteksi "Tap" berdasarkan kedalaman Z atau posisi Y relatif terhadap piano
+                        // Karena kita ingin gerakan 'menekan' ke bawah (arah Y di layar video adalah kebalikan koordinat 3D)
+                        // Kita gunakan Y landmark. Jika Y > Threshold (tangan turun), maka tekan.
+                        
+                        if (point.y > 0.65) { // Threshold posisi tangan di layar (0-1)
+                            if (!lastStates[note]) {
+                                triggerKey(note);
+                                lastStates[note] = true;
+                            }
+                        } else {
+                            lastStates[note] = false;
+                        }
+                    });
+                }
+            }
+        }
+
+        function triggerKey(note) {
+            if (keyMeshes[note]) {
+                const k = keyMeshes[note];
+                k.mesh.position.y = k.originalY - 0.2;
+                k.mesh.material.color.setHex(0x22d3ee); // Cyan Glow
+                playNote(note);
+            }
+        }
+
+        const hands = new Hands({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+        });
+
+        hands.setOptions({
+            maxNumHands: 2,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.7,
+            minTrackingConfidence: 0.7
+        });
+        hands.onResults(onResults);
+
+        const cameraFeed = new Camera(videoElement, {
+            onFrame: async () => {
+                await hands.send({ image: videoElement });
+            },
+            width: 640,
+            height: 480
+        });
+
+        // --- INITIALIZATION ---
+        document.getElementById('start-btn').addEventListener('click', () => {
+            audioCtx.resume();
+            document.getElementById('start-overlay').style.display = 'none';
+            
+            camStatus.className = "status-dot waiting-dot";
+            camText.innerText = "Mengaktifkan...";
+            
+            cameraFeed.start()
+                .then(() => {
+                    camStatus.className = "status-dot active-dot";
+                    camText.innerText = "Aktif";
+                })
+                .catch(err => {
+                    camStatus.className = "status-dot inactive-dot";
+                    camText.innerText = "Ditolak";
+                    console.error(err);
+                });
+        });
+
+        // Loop Animasi Three.js
+        function animate() {
+            requestAnimationFrame(animate);
+            renderer.render(scene, camera);
+        }
+        
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        window.onload = animate;
+
+    </script>
+</body>
+</html>
